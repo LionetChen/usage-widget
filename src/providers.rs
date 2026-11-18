@@ -17,7 +17,7 @@ const UA: &str = "usage-widget/1.0 (+https://github.com/pepsi-enjoyer/usage-widg
 /// Copilot premium-request credits: 50,000 credits = $500.
 const COPILOT_USD_PER_CREDIT: f64 = 500.0 / 50_000.0;
 /// Codex workspace spend credits: 12,500 credits = $500.
-const CODEX_USD_PER_CREDIT: f64 = 500.0 / 12_500.0;
+pub(crate) const CODEX_USD_PER_CREDIT: f64 = 500.0 / 12_500.0;
 /// Cheapest Codex model, for the headless run that refreshes its token.
 const CODEX_REFRESH_MODEL: &str = "gpt-6-luna";
 /// How long a headless CLI run may take before it is given up on.
@@ -185,7 +185,20 @@ pub struct Usage {
     pub note: Option<String>,
     /// Labels of meters whose values include a local estimate (see `estimate`).
     pub estimated: Vec<String>,
+    /// Dollars this computer's CLI use in the current weekly window would have
+    /// cost at API prices. Absent without a weekly window.
+    pub api_spend: Option<f64>,
     pub meters: Vec<Meter>,
+}
+
+/// See `Usage::api_spend`: priced from the local logs for the weekly window in
+/// `meters`, if there is one.
+fn week_api_spend(meters: &[Meter], spend: impl FnOnce(i64) -> Option<f64>) -> Option<f64> {
+    meters
+        .iter()
+        .find(|m| m.unit == Unit::Percent && m.label.as_deref() == Some("week"))
+        .and_then(|m| m.resets_at)
+        .and_then(spend)
 }
 
 /// A billing-cycle boundary; `verb` is "renews", "resets" or "ends".
@@ -605,6 +618,7 @@ fn copilot() -> Result<Usage, FetchError> {
             .as_str()
             .is_some_and(|p| p.starts_with("individual")),
         plan: copilot_plan(&json),
+        api_spend: None,
         cycle,
         note: None,
         estimated: Vec::new(),
@@ -1093,6 +1107,7 @@ fn claude_usage(
         cycle,
         note,
         estimated,
+        api_spend: week_api_spend(&meters, crate::claude_estimate::week_spend),
         meters,
     })
 }
@@ -1523,6 +1538,7 @@ fn codex_once(estimate: bool) -> Result<Usage, FetchError> {
                 cycle,
                 note: None,
                 estimated: Vec::new(),
+                api_spend: None,
                 meters: vec![Meter {
                     label: Some("unlimited".into()),
                     used: 0.0,
@@ -1564,6 +1580,7 @@ fn codex_once(estimate: bool) -> Result<Usage, FetchError> {
         cycle,
         note,
         estimated,
+        api_spend: week_api_spend(&meters, crate::codex_estimate::week_spend),
         meters,
     })
 }

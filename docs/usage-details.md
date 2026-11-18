@@ -91,6 +91,14 @@ API. Date-only renewals use calendar-day labels, including “today”, without
 claiming a billing time. Fractional usage reported by a service is kept as-is;
 local estimates apply only to whole-percent readings.
 
+## API spend this week
+
+Hovering a service name shows its plan and, for plans with a weekly window, what
+this computer's CLI use in that window would have cost at API prices, for example
+`Claude Pro ($12.34 API spend this week)`. It is priced from the Claude Code and
+Codex CLI logs (Codex at the rate card's credit price), so web, cloud and other
+devices are not counted. It needs no setting and is separate from `estimate`.
+
 ## Credentials
 
 Reuses the CLIs' stored credentials; never writes them.

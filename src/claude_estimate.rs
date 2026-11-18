@@ -19,9 +19,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// How far back transcripts are read, and response ids remembered.
 const HISTORY: Duration = Duration::from_secs(8 * 86_400);
 
-/// Relative price per million tokens: input, cache write (5 minutes), cache
-/// read, output. A 1-hour cache write costs twice the input price. Only the
-/// ratios matter; each window learns its own cost per point.
+/// API price in dollars per million tokens: input, cache write (5 minutes),
+/// cache read, output. A 1-hour cache write costs twice the input price. The
+/// estimate only needs the ratios, since each window learns its own cost per
+/// point; `week_spend` reports the dollars.
 fn prices(model: &str) -> [f64; 4] {
     if model.contains("haiku") {
         [1.0, 1.25, 0.1, 5.0]
@@ -98,6 +99,14 @@ pub fn fractions(
     }
     state.save();
     Ok(result)
+}
+
+/// What this computer's Claude Code use in the weekly window that resets at
+/// `window` would have cost at API prices, in dollars.
+pub fn week_spend(window: i64) -> Option<f64> {
+    crate::spend::WeekSpend::update("claude-spend.json", window, |state: &mut State| {
+        state.scan().iter().map(|e| (e.ts, e.cost)).collect()
+    })
 }
 
 #[derive(Serialize, Deserialize)]

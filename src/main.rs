@@ -17,6 +17,7 @@ mod providers;
 mod renewal_lookup;
 #[cfg(target_os = "macos")]
 mod renewal_webview;
+mod spend;
 mod timeutil;
 mod update;
 
@@ -57,6 +58,8 @@ const MUTED: Color32 = Color32::from_gray(135);
 const LIGHT: Color32 = Color32::from_gray(175);
 const TRACK: Color32 = Color32::from_gray(58);
 const ERR: Color32 = Color32::from_rgb(235, 110, 110);
+/// Background of a hover card, a step lighter than the widget so it reads as raised.
+const CARD: Color32 = Color32::from_rgb(38, 41, 50);
 
 struct Update {
     provider: Provider,
@@ -72,6 +75,7 @@ struct Slot {
     cycle: Option<Cycle>,
     note: Option<String>,
     estimated: Vec<String>,
+    api_spend: Option<f64>,
     meters: Option<Vec<Meter>>,
     error: Option<FetchError>,
     updated: Option<i64>,
@@ -167,8 +171,10 @@ impl App {
         );
         // Selectable labels grab clicks and drags, so right-click and drag-to-move
         // would not work over text.
-        cc.egui_ctx
-            .all_styles_mut(|style| style.interaction.selectable_labels = false);
+        cc.egui_ctx.all_styles_mut(|style| {
+            style.interaction.selectable_labels = false;
+            hover_style(style);
+        });
         let minimized = cc
             .storage
             .and_then(|s| eframe::get_value(s, MINIMIZED_KEY))
@@ -431,6 +437,7 @@ impl App {
                     }
                     slot.note = usage.note;
                     slot.estimated = usage.estimated;
+                    slot.api_spend = usage.api_spend;
                     slot.meters = Some(usage.meters);
                     slot.error = None;
                 }
@@ -1041,6 +1048,9 @@ fn bar(ui: &mut egui::Ui, fraction: f32, color: Color32) {
 const ESTIMATE_HOVER: &str = "Estimated from this computer's CLI token logs between reported \
      percentage ticks. Web, cloud and other devices aren't counted.";
 
+/// The short form for a hover card, which has no room for the full explanation.
+const ESTIMATE_NOTE: &str = "~ estimated from this computer's CLI logs";
+
 /// The percentage, coloured by level, with "~" when it includes a local estimate.
 fn percent_text(m: &Meter, size: f32, precision: usize, estimated: bool) -> RichText {
     let pct = m.percent();
@@ -1096,39 +1106,128 @@ fn name_link(ui: &mut egui::Ui, p: Provider) -> egui::Response {
     response
 }
 
-fn usage_hover(slot: &Slot, precision: usize) -> String {
-    let mut lines: Vec<String> = slot.plan.iter().cloned().collect();
-    if let Some(cycle) = &slot.cycle {
-        lines.push(format!(
-            "{} {} ({})",
-            cycle.verb,
-            cycle.countdown(chrono::Local::now().date_naive()),
-            cycle.when()
-        ));
+/// Hover cards are clipped to this small window and sit on top of the readings,
+/// so they are drawn small and flat, in the widget's own colours.
+fn hover_style(style: &mut egui::Style) {
+    style.visuals.window_fill = CARD;
+    style.visuals.window_stroke = Stroke::new(1.0, TRACK);
+    style.visuals.popup_shadow = egui::Shadow::NONE;
+    style.visuals.menu_corner_radius = CornerRadius::same(4);
+    style.visuals.widgets.noninteractive.fg_stroke.color = LIGHT;
+    style.spacing.menu_margin = Margin::symmetric(7, 5);
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        egui::FontId::proportional(HOVER_SIZE),
+    );
+}
+
+const HOVER_SIZE: f32 = 10.5;
+
+/// "Claude Pro ($12.34 API spend this week)": the service, its plan, and what
+/// this computer's CLI use in the weekly window would have cost at API prices.
+fn plan_summary(p: Provider, slot: &Slot) -> String {
+    let mut text = p.name().to_string();
+    if let Some(plan) = &slot.plan {
+        text.push(' ');
+        text.push_str(plan);
     }
-    for m in slot.meters.iter().flatten() {
-        let amount = if m.total <= 0.0 {
-            "unlimited".into()
-        } else if m.unit == Unit::Dollars {
-            m.summary()
-        } else {
-            percent_label(m.percent(), precision, slot.estimated(m))
-        };
-        let reset = m
-            .resets_at
-            .map(|at| format!(" · resets {}", local_when(at)))
-            .unwrap_or_default();
-        lines.push(format!(
-            "{}: {amount}{reset}",
-            m.label.as_deref().unwrap_or("Usage")
-        ));
+    if let Some(spend) = slot.api_spend {
+        text.push_str(&format!(" (${spend:.2} API spend this week)"));
     }
-    lines.extend(slot.note.iter().cloned());
-    lines.extend(slot.error.iter().map(|e| e.detail.clone()));
+    text
+}
+
+/// What hovering a service in the minimized row shows, where nothing else is on
+/// screen: the renewal and every meter with its reset time.
+#[derive(Default)]
+struct HoverCard {
+    cycle: Option<String>,
+    rows: Vec<HoverRow>,
+    notes: Vec<String>,
+    error: Option<String>,
+}
+
+struct HoverRow {
+    label: String,
+    amount: String,
+    color: Color32,
+    reset: Option<String>,
+}
+
+impl HoverCard {
+    fn show(&self, ui: &mut egui::Ui, heading: &str) {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 2.0);
+        let text = |s: &str, color| RichText::new(s).size(HOVER_SIZE).color(color);
+        ui.label(RichText::new(heading).size(11.5).strong().color(TEXT));
+        if let Some(cycle) = &self.cycle {
+            ui.label(text(cycle, META));
+        }
+        if !self.rows.is_empty() {
+            egui::Grid::new("meters")
+                .spacing([8.0, 2.0])
+                .min_col_width(0.0)
+                .min_row_height(0.0)
+                .show(ui, |ui| {
+                    for row in &self.rows {
+                        ui.label(text(&row.label, MUTED));
+                        ui.label(text(&row.amount, row.color).strong());
+                        if let Some(reset) = &row.reset {
+                            ui.label(text(reset, LIGHT));
+                        }
+                        ui.end_row();
+                    }
+                });
+        }
+        for note in &self.notes {
+            ui.label(text(note, META));
+        }
+        if let Some(error) = &self.error {
+            ui.label(text(error, ERR));
+        }
+    }
+}
+
+fn usage_hover(slot: &Slot, precision: usize) -> HoverCard {
+    let rows = slot
+        .meters
+        .iter()
+        .flatten()
+        .map(|m| {
+            let (amount, color) = if m.total <= 0.0 {
+                ("unlimited".into(), MUTED)
+            } else if m.unit == Unit::Dollars {
+                (m.summary(), TEXT)
+            } else {
+                (
+                    percent_label(m.percent(), precision, slot.estimated(m)),
+                    level_color(m.percent()),
+                )
+            };
+            HoverRow {
+                label: m.label.clone().unwrap_or_else(|| "usage".into()),
+                amount,
+                color,
+                reset: m.resets_at.map(|at| format!("resets {}", local_when(at))),
+            }
+        })
+        .collect();
+    let mut notes: Vec<String> = slot.note.iter().cloned().collect();
     if !slot.estimated.is_empty() {
-        lines.push(ESTIMATE_HOVER.into());
+        notes.push(ESTIMATE_NOTE.into());
     }
-    lines.join("\n")
+    HoverCard {
+        cycle: slot.cycle.as_ref().map(|cycle| {
+            format!(
+                "{} {} ({})",
+                cycle.verb,
+                cycle.countdown(chrono::Local::now().date_naive()),
+                cycle.when()
+            )
+        }),
+        rows,
+        notes,
+        error: slot.error.as_ref().map(|e| e.detail.clone()),
+    }
 }
 
 fn reset_tooltip(m: &Meter) -> Option<String> {
@@ -1260,7 +1359,7 @@ fn provider_block(
         if p == Provider::Claude {
             renewal.context_menu(&response);
         }
-        response.on_hover_text(usage_hover(slot, precision));
+        response.on_hover_text(plan_summary(p, slot));
         if let Some(meter) = selected
             && let Some(reset) = reset_label(meter, format.weekly_reset_date)
         {
@@ -1806,13 +1905,11 @@ fn compact_row(
         };
         let resp = ui.label(text.size(11.5).strong());
         // What the full card would say under the numbers: stale data, its age, errors.
-        let hover = usage_hover(&slot, precision);
-        if !hover.is_empty() {
-            if top.is_some() && slot.note.is_some() {
-                ui.label(RichText::new("*").size(11.5).color(META));
-            }
-            resp.on_hover_text(format!("{}: {}", p.name(), hover));
+        if top.is_some() && slot.note.is_some() {
+            ui.label(RichText::new("*").size(11.5).color(META));
         }
+        let hover = usage_hover(&slot, precision);
+        resp.on_hover_ui(|ui| hover.show(ui, &plan_summary(*p, &slot)));
     }
 }
 
@@ -2124,6 +2221,7 @@ mod lookup_tests {
                         cycle: None,
                         note: None,
                         estimated: Vec::new(),
+                        api_spend: None,
                         meters: vec![Meter {
                             label: None,
                             used: 10.0,
@@ -2174,6 +2272,7 @@ mod lookup_tests {
                     cycle: None,
                     note: None,
                     estimated: vec![],
+                    api_spend: None,
                     meters: vec![],
                 }),
                 at: now_unix(),
@@ -2652,7 +2751,7 @@ mod display_tests {
     }
 
     fn personal_slot() -> Slot {
-        let now = now_unix();
+        let now = now_unix().div_euclid(60) * 60;
         Slot {
             personal: true,
             plan: Some("Max 5x".into()),
@@ -2721,11 +2820,32 @@ mod display_tests {
                 .collect::<Vec<_>>(),
             ["5h", "week"]
         );
+        assert_eq!(plan_summary(Provider::Claude, &slot), "Claude Max 5x");
+        let spent = Slot {
+            api_spend: Some(1234.5),
+            ..slot.clone()
+        };
+        assert_eq!(
+            plan_summary(Provider::Claude, &spent),
+            "Claude Max 5x ($1234.50 API spend this week)"
+        );
+        assert_eq!(plan_summary(Provider::Codex, &Slot::default()), "Codex");
         let hover = usage_hover(&slot, 0);
-        assert!(hover.contains("Max 5x"));
-        assert!(hover.contains("renews 9d"));
-        assert!(hover.contains("5h: ~80.12%"));
-        assert!(hover.contains("fable wk: 98%"));
+        assert!(hover.cycle.as_deref().unwrap().starts_with("renews 9d"));
+        let rows: Vec<_> = hover
+            .rows
+            .iter()
+            .map(|r| (r.label.as_str(), r.amount.as_str(), r.reset.is_some()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("5h", "~80.12%", true),
+                ("week", "90%", true),
+                ("fable wk", "98%", true)
+            ]
+        );
+        assert_eq!(hover.notes, [ESTIMATE_NOTE]);
     }
 
     #[test]
@@ -2752,6 +2872,7 @@ mod display_tests {
                         cycle: None,
                         note: None,
                         estimated: vec!["5h".into()],
+                        api_spend: None,
                         meters: vec![
                             window("5h", 30.47, now + 3600),
                             window("week", 3.0, now + 4 * 86_400),
@@ -2786,7 +2907,7 @@ mod display_tests {
         let slot = &app.slots[&Provider::Claude];
         let at = slot.windows()[1].resets_at.unwrap();
         let date = chrono::Local.timestamp_opt(at, 0).single().unwrap();
-        let expected = format!("({})", date.format("%-d %b %-I:%M%P"));
+        let expected = format!("({})", date.format("%a %-I:%M%P"));
         let mut idle_width = None;
         for (loading, missing_renewal, lookup_running) in [
             (false, false, false),
