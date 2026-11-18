@@ -1633,10 +1633,13 @@ pub(crate) fn whole_percent(value: f64) -> Option<f64> {
     (value.is_finite() && (value - value.round()).abs() < 1e-9).then(|| value.round())
 }
 
+/// The Pro tiers are named by their monthly price, as the Codex CLI names them.
 fn codex_plan(json: &Value) -> Option<String> {
     Some(
         match json["plan_type"].as_str().filter(|s| !s.is_empty())? {
-            "prolite" => "Pro Lite".into(),
+            "prolite" => "Pro 100".into(),
+            "pro" => "Pro 200".into(),
+            "promax" => "Pro 500".into(),
             other => title_case(other),
         },
     )
@@ -1645,7 +1648,7 @@ fn codex_plan(json: &Value) -> Option<String> {
 fn codex_personal(json: &Value) -> bool {
     matches!(
         json["plan_type"].as_str(),
-        Some("plus" | "pro" | "prolite" | "go")
+        Some("plus" | "pro" | "prolite" | "promax" | "go")
     )
 }
 
@@ -2279,7 +2282,9 @@ mod tests {
         );
 
         let codex = |plan: &str| codex_plan(&json!({ "plan_type": plan }));
-        assert_eq!(codex("prolite").as_deref(), Some("Pro Lite"));
+        assert_eq!(codex("prolite").as_deref(), Some("Pro 100"));
+        assert_eq!(codex("pro").as_deref(), Some("Pro 200"));
+        assert_eq!(codex("promax").as_deref(), Some("Pro 500"));
         assert_eq!(codex("plus").as_deref(), Some("Plus"));
     }
 }
