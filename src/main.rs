@@ -1045,6 +1045,9 @@ fn bar(ui: &mut egui::Ui, fraction: f32, color: Color32) {
 const ESTIMATE_HOVER: &str = "Estimated from this computer's CLI token logs between reported \
      percentage ticks. Web, cloud and other devices aren't counted.";
 
+/// The short form for a hover card, which has no room for the full explanation.
+const ESTIMATE_NOTE: &str = "~ estimated from this computer's CLI logs";
+
 /// The percentage, coloured by level, with "~" when it includes a local estimate.
 fn percent_text(m: &Meter, size: f32, precision: usize, estimated: bool) -> RichText {
     let pct = m.percent();
@@ -1162,6 +1165,7 @@ impl HoverCard {
             egui::Grid::new("meters")
                 .spacing([8.0, 2.0])
                 .min_col_width(0.0)
+                .min_row_height(0.0)
                 .show(ui, |ui| {
                     for row in &self.rows {
                         ui.label(text(&row.label, MUTED));
@@ -1208,7 +1212,7 @@ fn usage_hover(slot: &Slot, precision: usize) -> HoverCard {
         .collect();
     let mut notes: Vec<String> = slot.note.iter().cloned().collect();
     if !slot.estimated.is_empty() {
-        notes.push(ESTIMATE_HOVER.into());
+        notes.push(ESTIMATE_NOTE.into());
     }
     HoverCard {
         plan: slot.plan.clone(),
@@ -2835,7 +2839,7 @@ mod display_tests {
                 ("fable wk", "98%", true)
             ]
         );
-        assert_eq!(hover.notes, [ESTIMATE_HOVER]);
+        assert_eq!(hover.notes, [ESTIMATE_NOTE]);
         assert!(usage_hover(&Slot::default(), 0).is_empty());
     }
 
