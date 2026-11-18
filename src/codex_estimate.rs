@@ -91,6 +91,21 @@ pub fn fraction(
     Ok(result)
 }
 
+/// What this computer's Codex CLI use in the weekly window that resets at
+/// `window` would have cost in dollars, at the rate card's credit price.
+pub fn week_spend(window: i64) -> Option<f64> {
+    crate::spend::WeekSpend::update("codex-spend.json", window, |state: &mut State| {
+        state
+            .scan()
+            .iter()
+            .filter_map(|e| {
+                let ts = crate::timeutil::parse_rfc3339(&e.ts)?;
+                Some((ts, e.credits * crate::providers::CODEX_USD_PER_CREDIT))
+            })
+            .collect()
+    })
+}
+
 /// One refresh: the tracker as it was before (`before`), the new log events and
 /// the reading. Enough to replay the estimate, e.g. after upgrading from an older
 /// cache or when saving was interrupted.

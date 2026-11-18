@@ -17,6 +17,7 @@ mod providers;
 mod renewal_lookup;
 #[cfg(target_os = "macos")]
 mod renewal_webview;
+mod spend;
 mod timeutil;
 mod update;
 
@@ -74,6 +75,7 @@ struct Slot {
     cycle: Option<Cycle>,
     note: Option<String>,
     estimated: Vec<String>,
+    api_spend: Option<f64>,
     meters: Option<Vec<Meter>>,
     error: Option<FetchError>,
     updated: Option<i64>,
@@ -435,6 +437,7 @@ impl App {
                     }
                     slot.note = usage.note;
                     slot.estimated = usage.estimated;
+                    slot.api_spend = usage.api_spend;
                     slot.meters = Some(usage.meters);
                     slot.error = None;
                 }
@@ -1120,11 +1123,24 @@ fn hover_style(style: &mut egui::Style) {
 
 const HOVER_SIZE: f32 = 10.5;
 
-/// What hovering a service name shows: the plan, its renewal, and every meter
-/// with its reset time, including the ones the header leaves out.
+/// "Claude Pro ($12.34 API spend this week)": the service, its plan, and what
+/// this computer's CLI use in the weekly window would have cost at API prices.
+fn plan_summary(p: Provider, slot: &Slot) -> String {
+    let mut text = p.name().to_string();
+    if let Some(plan) = &slot.plan {
+        text.push(' ');
+        text.push_str(plan);
+    }
+    if let Some(spend) = slot.api_spend {
+        text.push_str(&format!(" (${spend:.2} API spend this week)"));
+    }
+    text
+}
+
+/// What hovering a service in the minimized row shows, where nothing else is on
+/// screen: the renewal and every meter with its reset time.
 #[derive(Default)]
 struct HoverCard {
-    plan: Option<String>,
     cycle: Option<String>,
     rows: Vec<HoverRow>,
     notes: Vec<String>,
@@ -1139,25 +1155,10 @@ struct HoverRow {
 }
 
 impl HoverCard {
-    fn is_empty(&self) -> bool {
-        self.plan.is_none()
-            && self.cycle.is_none()
-            && self.rows.is_empty()
-            && self.notes.is_empty()
-            && self.error.is_none()
-    }
-
-    /// `name` heads the card where the service name is not already on screen.
-    fn show(&self, ui: &mut egui::Ui, name: Option<&str>) {
+    fn show(&self, ui: &mut egui::Ui, heading: &str) {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 2.0);
         let text = |s: &str, color| RichText::new(s).size(HOVER_SIZE).color(color);
-        let heading = match (name, self.plan.as_deref()) {
-            (Some(name), Some(plan)) => Some(format!("{name} · {plan}")),
-            (name, plan) => name.or(plan).map(str::to_owned),
-        };
-        if let Some(heading) = heading {
-            ui.label(RichText::new(heading).size(11.5).strong().color(TEXT));
-        }
+        ui.label(RichText::new(heading).size(11.5).strong().color(TEXT));
         if let Some(cycle) = &self.cycle {
             ui.label(text(cycle, META));
         }
@@ -1215,7 +1216,6 @@ fn usage_hover(slot: &Slot, precision: usize) -> HoverCard {
         notes.push(ESTIMATE_NOTE.into());
     }
     HoverCard {
-        plan: slot.plan.clone(),
         cycle: slot.cycle.as_ref().map(|cycle| {
             format!(
                 "{} {} ({})",
@@ -1359,10 +1359,7 @@ fn provider_block(
         if p == Provider::Claude {
             renewal.context_menu(&response);
         }
-        let hover = usage_hover(slot, precision);
-        if !hover.is_empty() {
-            response.on_hover_ui(|ui| hover.show(ui, None));
-        }
+        response.on_hover_text(plan_summary(p, slot));
         if let Some(meter) = selected
             && let Some(reset) = reset_label(meter, format.weekly_reset_date)
         {
@@ -1908,13 +1905,11 @@ fn compact_row(
         };
         let resp = ui.label(text.size(11.5).strong());
         // What the full card would say under the numbers: stale data, its age, errors.
-        let hover = usage_hover(&slot, precision);
-        if !hover.is_empty() {
-            if top.is_some() && slot.note.is_some() {
-                ui.label(RichText::new("*").size(11.5).color(META));
-            }
-            resp.on_hover_ui(|ui| hover.show(ui, Some(p.name())));
+        if top.is_some() && slot.note.is_some() {
+            ui.label(RichText::new("*").size(11.5).color(META));
         }
+        let hover = usage_hover(&slot, precision);
+        resp.on_hover_ui(|ui| hover.show(ui, &plan_summary(*p, &slot)));
     }
 }
 
@@ -2226,6 +2221,7 @@ mod lookup_tests {
                         cycle: None,
                         note: None,
                         estimated: Vec::new(),
+                        api_spend: None,
                         meters: vec![Meter {
                             label: None,
                             used: 10.0,
@@ -2276,6 +2272,7 @@ mod lookup_tests {
                     cycle: None,
                     note: None,
                     estimated: vec![],
+                    api_spend: None,
                     meters: vec![],
                 }),
                 at: now_unix(),
@@ -2823,8 +2820,17 @@ mod display_tests {
                 .collect::<Vec<_>>(),
             ["5h", "week"]
         );
+        assert_eq!(plan_summary(Provider::Claude, &slot), "Claude Max 5x");
+        let spent = Slot {
+            api_spend: Some(1234.5),
+            ..slot.clone()
+        };
+        assert_eq!(
+            plan_summary(Provider::Claude, &spent),
+            "Claude Max 5x ($1234.50 API spend this week)"
+        );
+        assert_eq!(plan_summary(Provider::Codex, &Slot::default()), "Codex");
         let hover = usage_hover(&slot, 0);
-        assert_eq!(hover.plan.as_deref(), Some("Max 5x"));
         assert!(hover.cycle.as_deref().unwrap().starts_with("renews 9d"));
         let rows: Vec<_> = hover
             .rows
@@ -2840,7 +2846,6 @@ mod display_tests {
             ]
         );
         assert_eq!(hover.notes, [ESTIMATE_NOTE]);
-        assert!(usage_hover(&Slot::default(), 0).is_empty());
     }
 
     #[test]
@@ -2867,6 +2872,7 @@ mod display_tests {
                         cycle: None,
                         note: None,
                         estimated: vec!["5h".into()],
+                        api_spend: None,
                         meters: vec![
                             window("5h", 30.47, now + 3600),
                             window("week", 3.0, now + 4 * 86_400),
